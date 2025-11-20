@@ -7,7 +7,6 @@ import phonenumbers
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackContext, CallbackQueryHandler
-import pyodbc
 import random
 import string
 
@@ -268,7 +267,7 @@ def save_registration_progress(user_id: int, current_stage: str, user_data: dict
 def get_registration_progress(user_id: int):
     """استرجاع تقدم التسجيل المحفوظ"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute('SELECT current_stage, user_data FROM registration_progress WHERE user_id = %s', (user_id,))
@@ -288,7 +287,7 @@ def get_registration_progress(user_id: int):
 def delete_registration_progress(user_id: int):
     """حذف تقدم التسجيل بعد إكمال العملية"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute("DELETE FROM registration_progress WHERE user_id = %s", (user_id,))
@@ -331,7 +330,7 @@ def generate_referral_code():
 def check_referral_code_unique(code):
     """التحقق من أن كود الإحالة فريد وغير مستخدم"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE referral_code = %s", (code,))
@@ -346,7 +345,7 @@ def check_referral_code_unique(code):
 def update_referral_count(referral_code):
     """زيادة عداد الإحالات للمستخدم الذي قام بدعوة آخر"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute(
@@ -691,7 +690,7 @@ async def handle_invited_user(update: Update, context: CallbackContext, referral
 async def get_inviter_name(referral_code: str) -> str:
     """الحصول على اسم الشخص الذي قام بالدعوة"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute("SELECT full_name FROM user_profiles WHERE referral_code = %s", (referral_code,))
@@ -715,7 +714,7 @@ async def validate_referral_code(code: str) -> bool:
         if len(code) < 3:
             return False
             
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE referral_code = %s", (code,))
@@ -1618,7 +1617,7 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
 async def save_all_data(update: Update, context: CallbackContext):
     """حفظ جميع البيانات في قاعدة البيانات"""
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         user_data = context.user_data
@@ -1802,7 +1801,7 @@ async def show_profile(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
             return
         
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -1879,7 +1878,7 @@ async def show_invite(update: Update, context: CallbackContext):
     try:
         user_id = update.effective_user.id
         
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute('SELECT referral_code, total_referrals FROM user_profiles WHERE user_id = %s', (user_id,))
@@ -2374,7 +2373,7 @@ async def bot_stats(update: Update, context: CallbackContext):
         return
     
     try:
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles")
@@ -2454,7 +2453,7 @@ class CommentVerificationSystem:
     def setup_database(self):
         """إعداد جداول التحقق من التعليقات في قاعدة البيانات"""
         try:
-            conn = pyodbc.connect(CONNECTION_STRING)
+            conn = psycopg2.connect(CONNECTION_STRING)
             cursor = conn.cursor()
             
             # جدول مهام التحقق
@@ -2521,7 +2520,7 @@ class CommentVerificationSystem:
     def create_verification_task(self, user_id: int, task_data: dict) -> dict:
         """إنشاء مهمة تحقق جديدة للمستخدم"""
         try:
-            conn = pyodbc.connect(CONNECTION_STRING)
+            conn = psycopg2.connect(CONNECTION_STRING)
             cursor = conn.cursor()
             
             unique_code = self.generate_unique_code(user_id)
@@ -2563,7 +2562,7 @@ class CommentVerificationSystem:
     def verify_comment_submission(self, user_id: int, unique_code: str, user_comment: str) -> dict:
         """التحقق من تقديم التعليق"""
         try:
-            conn = pyodbc.connect(CONNECTION_STRING)
+            conn = psycopg2.connect(CONNECTION_STRING)
             cursor = conn.cursor()
             
             # البحث عن المهمة
@@ -2616,7 +2615,7 @@ class CommentVerificationSystem:
     def get_active_tasks(self) -> list:
         """الحصول على المهام النشطة"""
         try:
-            conn = pyodbc.connect(CONNECTION_STRING)
+            conn = psycopg2.connect(CONNECTION_STRING)
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -2651,7 +2650,7 @@ class CommentVerificationSystem:
     def get_user_progress(self, user_id: int) -> dict:
         """الحصول على تقدم المستخدم"""
         try:
-            conn = pyodbc.connect(CONNECTION_STRING)
+            conn = psycopg2.connect(CONNECTION_STRING)
             cursor = conn.cursor()
             
             # عدد المهام المكتملة
@@ -2973,7 +2972,7 @@ async def admin_add_comment_task(update: Update, context: CallbackContext):
         required_comment = " ".join(args[5:])
         
         # حفظ المهمة في قاعدة البيانات
-        conn = pyodbc.connect(CONNECTION_STRING)
+        conn = psycopg2.connect(CONNECTION_STRING)
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -3013,7 +3012,7 @@ async def admin_comment_stats(update: Update, context: CallbackContext):
         return
     
     try:
-        conn = pyodbc.connect(create_connection())
+        conn = psycopg2.connect(create_connection())
         cursor = conn.cursor()
         
         # إحصائيات عامة
