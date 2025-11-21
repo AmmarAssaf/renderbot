@@ -4,20 +4,18 @@
 import logging
 import re
 import phonenumbers
+import json  
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackContext, CallbackQueryHandler
 import random
 import string
 
-# ==============================
-# 🗄️ إعدادات قاعدة البيانات (نسخة محلية فقط)
-# ==============================
+
 # ==============================
 # 🗄️ إعدادات قاعدة البيانات لـ Render
 # ==============================
 import os
-import logging
 import urllib.parse
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -246,6 +244,9 @@ def save_registration_progress(user_id: int, current_stage: str, user_data: dict
             
         cursor = conn.cursor()
         
+        # ⬅️ استبدل str بـ json.dumps
+        user_data_json = json.dumps(user_data)
+        
         cursor.execute('''
             INSERT INTO registration_progress 
             (user_id, current_stage, user_data, telegram_username)
@@ -255,7 +256,7 @@ def save_registration_progress(user_id: int, current_stage: str, user_data: dict
                 current_stage = EXCLUDED.current_stage,
                 user_data = EXCLUDED.user_data,
                 last_updated = CURRENT_TIMESTAMP
-        ''', (user_id, current_stage, str(user_data), user_data.get('telegram_username', '')))
+        ''', (user_id, current_stage, user_data_json, user_data.get('telegram_username', '')))
         
         conn.commit()
         cursor.close()
@@ -272,15 +273,18 @@ def save_registration_progress(user_id: int, current_stage: str, user_data: dict
 def get_registration_progress(user_id: int):
     """استرجاع تقدم التسجيل المحفوظ"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()
+        if not conn:
+            return None
+            
         cursor = conn.cursor()
         
         cursor.execute('SELECT current_stage, user_data FROM registration_progress WHERE user_id = %s', (user_id,))
         result = cursor.fetchone()
-        conn.close()
         
         if result:
-            user_data = eval(result[1]) if result[1] else {}
+            # ⬅️ استبدل eval بـ json.loads
+            user_data = json.loads(result[1]) if result[1] else {}
             logger.info(f"✅ تم استرجاع تقدم التسجيل للمستخدم {user_id}")
             return {'current_stage': result[0], 'user_data': user_data}
         return None
@@ -288,11 +292,18 @@ def get_registration_progress(user_id: int):
     except Exception as e:
         logger.error(f"❌ خطأ في استرجاع تقدم التسجيل: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
+    
 
 def delete_registration_progress(user_id: int):
     """حذف تقدم التسجيل بعد إكمال العملية"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استبدل الاتصال المباشر
+        if not conn:
+            return False
+            
         cursor = conn.cursor()
         
         cursor.execute("DELETE FROM registration_progress WHERE user_id = %s", (user_id,))
@@ -335,7 +346,10 @@ def generate_referral_code():
 def check_referral_code_unique(code):
     """التحقق من أن كود الإحالة فريد وغير مستخدم"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استبدل الاتصال المباشر
+        if not conn:
+            return False
+            
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE referral_code = %s", (code,))
@@ -350,7 +364,10 @@ def check_referral_code_unique(code):
 def update_referral_count(referral_code):
     """زيادة عداد الإحالات للمستخدم الذي قام بدعوة آخر"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استبدل الاتصال المباشر
+        if not conn:
+            return False
+            
         cursor = conn.cursor()
         
         cursor.execute(
@@ -695,7 +712,10 @@ async def handle_invited_user(update: Update, context: CallbackContext, referral
 async def get_inviter_name(referral_code: str) -> str:
     """الحصول على اسم الشخص الذي قام بالدعوة"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استخدم create_connection
+        if not conn:
+            logger.error("❌ فشل الاتصال بقاعدة البيانات في get_inviter_name")
+            return "عضو مجهول"
         cursor = conn.cursor()
         
         cursor.execute("SELECT full_name FROM user_profiles WHERE referral_code = %s", (referral_code,))
@@ -719,7 +739,10 @@ async def validate_referral_code(code: str) -> bool:
         if len(code) < 3:
             return False
             
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استخدم create_connection
+        if not conn:
+            logger.error("❌ فشل الاتصال بقاعدة البيانات في validate_referral_code")
+            return
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE referral_code = %s", (code,))
@@ -1607,8 +1630,12 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
     await query.answer()
     
     if query.data == "confirm_yes":
-        await save_all_data(update, context)
-        return await show_final_summary(update, context)
+        success = await save_all_data(update, context)  # ⬅️ التحقق من النجاح
+        if success:
+            return await show_final_summary(update, context)
+        else:
+            await query.edit_message_text("❌ فشل في حفظ البيانات. الرجاء المحاولة مرة أخرى.")
+            return ConversationHandler.END
     elif query.data == "confirm_edit":
         return await show_edit_options(update, context)
     else:
@@ -1622,7 +1649,12 @@ async def handle_confirmation(update: Update, context: CallbackContext) -> int:
 async def save_all_data(update: Update, context: CallbackContext):
     """حفظ جميع البيانات في قاعدة البيانات"""
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()
+        if not conn:
+            logger.error("❌ فشل الاتصال بقاعدة البيانات في save_all_data")
+            if hasattr(update, 'message') and update.message:
+                await update.message.reply_text("❌ فشل في حفظ البيانات. الرجاء المحاولة لاحقاً.")
+            return False
         cursor = conn.cursor()
         
         user_data = context.user_data
@@ -1806,7 +1838,11 @@ async def show_profile(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
             return
         
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()
+        if not conn:
+            await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
+            return
+            
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -1882,8 +1918,15 @@ async def show_invite(update: Update, context: CallbackContext):
     """عرض كود الدعوة والإحصائيات"""
     try:
         user_id = update.effective_user.id
+        if not await check_user_registration(user_id):
+            await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
+            return
         
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()
+        if not conn:
+            await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
+            return
+            
         cursor = conn.cursor()
         
         cursor.execute('SELECT referral_code, total_referrals FROM user_profiles WHERE user_id = %s', (user_id,))
@@ -2371,14 +2414,17 @@ async def new_start(update: Update, context: CallbackContext) -> int:
 
 async def bot_stats(update: Update, context: CallbackContext):
     """عرض إحصائيات البوت (للمالك فقط)"""
-    user = update.message.from_user
-    
-    if user.id != OWNER_USER_ID:
-        await update.message.reply_text("🚫 هذا الأمر متاح للمالك فقط.")
-        return
-    
     try:
-        conn = psycopg2.connect(CONNECTION_STRING)
+        user_id = update.effective_user.id
+        if not await check_user_registration(user_id):
+            await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
+            return
+        
+        conn = create_connection()
+        if not conn:
+            await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
+            return
+            
         cursor = conn.cursor()
         
         cursor.execute("SELECT COUNT(*) FROM user_profiles")
@@ -2390,10 +2436,12 @@ async def bot_stats(update: Update, context: CallbackContext):
         cursor.execute("SELECT SUM(total_referrals) FROM user_profiles")
         total_referrals = cursor.fetchone()[0] or 0
         
-        cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE CAST(registration_date AS DATE) = CAST(GETDATE() AS DATE)")
+        # ⬅️ أصلح استعلام تاريخ اليوم لـ PostgreSQL
+        cursor.execute("SELECT COUNT(*) FROM user_profiles WHERE DATE(registration_date) = CURRENT_DATE")
         today_registrations = cursor.fetchone()[0]
         
-        cursor.execute('SELECT TOP 5 full_name, total_referrals FROM user_profiles WHERE total_referrals > 0 ORDER BY total_referrals DESC')
+        # ⬅️ أصلح استعلام أعلى المحيلين لـ PostgreSQL
+        cursor.execute('SELECT full_name, total_referrals FROM user_profiles WHERE total_referrals > 0 ORDER BY total_referrals DESC LIMIT 5')
         top_referrers = cursor.fetchall()
         
         conn.close()
@@ -2458,54 +2506,57 @@ class CommentVerificationSystem:
     def setup_database(self):
         """إعداد جداول التحقق من التعليقات في قاعدة البيانات"""
         try:
-            conn = psycopg2.connect(CONNECTION_STRING)
+            conn = create_connection()
+            if not conn:
+                return
+                
             cursor = conn.cursor()
             
-            # جدول مهام التحقق
+            # جدول مهام التحقق - ⬅️ أصلح بناء الجدول لـ PostgreSQL
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS comment_verification_tasks (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    id SERIAL PRIMARY KEY,
                     user_id BIGINT,
-                    post_url NVARCHAR(500),
-                    platform NVARCHAR(50),
-                    unique_code NVARCHAR(20) UNIQUE,
-                    required_comment_text NVARCHAR(200),
-                    status NVARCHAR(20) DEFAULT 'pending',
-                    user_comment_text NVARCHAR(500),
+                    post_url VARCHAR(500),
+                    platform VARCHAR(50),
+                    unique_code VARCHAR(20) UNIQUE,
+                    required_comment_text VARCHAR(200),
+                    status VARCHAR(20) DEFAULT 'pending',
+                    user_comment_text TEXT,
                     reward_amount DECIMAL(10,2) DEFAULT 0.00,
-                    verified_at DATETIME,
-                    created_at DATETIME DEFAULT GETDATE()
+                    verified_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
-            # جدول المكافآت
+            # جدول المكافآت - ⬅️ أصلح بناء الجدول لـ PostgreSQL
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_rewards (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    id SERIAL PRIMARY KEY,
                     user_id BIGINT,
                     task_id INT,
                     reward_amount DECIMAL(10,2),
-                    reward_type NVARCHAR(50),
-                    status NVARCHAR(20) DEFAULT 'pending',
-                    paid_at DATETIME,
-                    created_at DATETIME DEFAULT GETDATE()
+                    reward_type VARCHAR(50),
+                    status VARCHAR(20) DEFAULT 'pending',
+                    paid_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
-            # جدول المهام النشطة (للإدارة)
+            # جدول المهام النشطة - ⬅️ أصلح بناء الجدول لـ PostgreSQL
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS active_comment_tasks (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    platform NVARCHAR(50),
-                    post_url NVARCHAR(500),
-                    description NVARCHAR(300),
-                    required_comment_template NVARCHAR(200),
+                    id SERIAL PRIMARY KEY,
+                    platform VARCHAR(50),
+                    post_url VARCHAR(500),
+                    description VARCHAR(300),
+                    required_comment_template VARCHAR(200),
                     reward_amount DECIMAL(10,2),
                     max_participants INT,
                     current_participants INT DEFAULT 0,
-                    status NVARCHAR(20) DEFAULT 'active',
+                    status VARCHAR(20) DEFAULT 'active',
                     created_by BIGINT,
-                    created_at DATETIME DEFAULT GETDATE()
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
@@ -2525,7 +2576,10 @@ class CommentVerificationSystem:
     def create_verification_task(self, user_id: int, task_data: dict) -> dict:
         """إنشاء مهمة تحقق جديدة للمستخدم"""
         try:
-            conn = psycopg2.connect(CONNECTION_STRING)
+            conn = create_connection()
+            if not conn:
+                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
+                
             cursor = conn.cursor()
             
             unique_code = self.generate_unique_code(user_id)
@@ -2567,7 +2621,10 @@ class CommentVerificationSystem:
     def verify_comment_submission(self, user_id: int, unique_code: str, user_comment: str) -> dict:
         """التحقق من تقديم التعليق"""
         try:
-            conn = psycopg2.connect(CONNECTION_STRING)
+            conn = create_connection()
+            if not conn:
+                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
+                
             cursor = conn.cursor()
             
             # البحث عن المهمة
@@ -2594,7 +2651,7 @@ class CommentVerificationSystem:
             # تحديث حالة المهمة
             cursor.execute('''
                 UPDATE comment_verification_tasks 
-                SET status = 'verified', user_comment_text = %s, verified_at = GETDATE()
+                SET status = 'verified', user_comment_text = %s, verified_at = CURRENT_TIMESTAMP
                 WHERE id = %s
             ''', (user_comment, task_id))
             
@@ -2620,7 +2677,10 @@ class CommentVerificationSystem:
     def get_active_tasks(self) -> list:
         """الحصول على المهام النشطة"""
         try:
-            conn = psycopg2.connect(CONNECTION_STRING)
+            conn = create_connection()  # ⬅️ استخدم create_connection
+            if not conn:
+                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_active_tasks")
+                return 
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -2655,7 +2715,10 @@ class CommentVerificationSystem:
     def get_user_progress(self, user_id: int) -> dict:
         """الحصول على تقدم المستخدم"""
         try:
-            conn = psycopg2.connect(CONNECTION_STRING)
+            conn = create_connection()  # ⬅️ استخدم create_connection
+            if not conn:
+                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_user_progress")
+                return
             cursor = conn.cursor()
             
             # عدد المهام المكتملة
@@ -2977,7 +3040,11 @@ async def admin_add_comment_task(update: Update, context: CallbackContext):
         required_comment = " ".join(args[5:])
         
         # حفظ المهمة في قاعدة البيانات
-        conn = psycopg2.connect(CONNECTION_STRING)
+        conn = create_connection()  # ⬅️ استخدم create_connection
+        if not conn:
+            await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
+            return
+            
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -3017,7 +3084,11 @@ async def admin_comment_stats(update: Update, context: CallbackContext):
         return
     
     try:
-        conn = psycopg2.connect(create_connection())
+        conn = create_connection()  # ⬅️ استخدم create_connection
+        if not conn:
+            await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
+            return
+            
         cursor = conn.cursor()
         
         # إحصائيات عامة
@@ -3234,13 +3305,10 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
-
     print("🔍 اختبار الإعدادات...")
-    if test_database_connection():
+    if test_database_connection() and setup_database():
         print("✅ جميع الإعدادات صحيحة!")
         main()
     else:
         print("❌ هناك مشكلة في الإعدادات")
-
-        
-    main()
+    # ⬅️ احذف استدعاء main() الإضافي - لا تضيف أي شيء بعد هذا
