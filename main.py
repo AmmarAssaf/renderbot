@@ -56,6 +56,8 @@ def get_database_config():
             'environment': 'local'
         }
 
+CONNECTION_STRING = os.environ.get('DATABASE_URL')
+
 def create_connection():
     """إنشاء اتصال بقاعدة البيانات"""
     try:
@@ -76,10 +78,13 @@ def create_connection():
 # ==============================
 # 🤖 إعدادات البوت لـ Render
 # ==============================
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '8415474087:AAEDtwjvgogXfvpMzARe875svIEkSSDdNXk')
-OWNER_USER_ID = int(os.environ.get('OWNER_USER_ID', '5425405664'))
-TELEGRAM_OWNER_ID = int(os.environ.get('TELEGRAM_OWNER_ID', '5425405664'))
-ALLOWED_USER_IDS = [OWNER_USER_ID, TELEGRAM_OWNER_ID]
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN غير معين في متغيرات البيئة")
+
+OWNER_USER_ID = int(os.environ.get('OWNER_USER_ID', 0))
+TELEGRAM_OWNER_ID = int(os.environ.get('TELEGRAM_OWNER_ID', 0))
+ALLOWED_USER_IDS = [OWNER_USER_ID, TELEGRAM_OWNER_ID] if OWNER_USER_ID and TELEGRAM_OWNER_ID else []
 
 # ==============================
 # 🎯 تعريف مراحل المحادثة (States)
@@ -3229,4 +3234,13 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
+
+    print("🔍 اختبار الإعدادات...")
+    if test_database_connection():
+        print("✅ جميع الإعدادات صحيحة!")
+        main()
+    else:
+        print("❌ هناك مشكلة في الإعدادات")
+
+        
     main()
