@@ -20,6 +20,18 @@ import urllib.parse
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from telegram.ext import Application
+from flask import Flask
+
+# إذا كنت تستخدم webhooks مع Flask
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+
+
 # إعداد التسجيل
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1918,15 +1930,11 @@ async def show_invite(update: Update, context: CallbackContext):
     """عرض كود الدعوة والإحصائيات"""
     try:
         user_id = update.effective_user.id
-        if not await check_user_registration(user_id):
-            await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
-            return
         
-        conn = create_connection()
+        conn = create_connection()  # ⬅️ استخدم create_connection
         if not conn:
             await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
             return
-            
         cursor = conn.cursor()
         
         cursor.execute('SELECT referral_code, total_referrals FROM user_profiles WHERE user_id = %s', (user_id,))
@@ -2414,13 +2422,14 @@ async def new_start(update: Update, context: CallbackContext) -> int:
 
 async def bot_stats(update: Update, context: CallbackContext):
     """عرض إحصائيات البوت (للمالك فقط)"""
+    user = update.message.from_user
+    
+    if user.id != OWNER_USER_ID:
+        await update.message.reply_text("🚫 هذا الأمر متاح للمالك فقط.")
+        return
+    
     try:
-        user_id = update.effective_user.id
-        if not await check_user_registration(user_id):
-            await update.message.reply_text("❌ لم يتم العثور على ملفك الشخصي")
-            return
-        
-        conn = create_connection()
+        conn = create_connection()  # ⬅️ استخدم create_connection
         if not conn:
             await update.message.reply_text("❌ فشل الاتصال بقاعدة البيانات")
             return
@@ -3305,6 +3314,12 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
+
+    # احصل على المنفذ من متغير البيئة، أو استخدم 10000 افتراضيًا
+    port = int(os.environ.get('PORT', 10000))
+    # ابدأ الخدمة على المنفذ المحدد
+    app.run(host='0.0.0.0', port=port)
+
     print("🔍 اختبار الإعدادات...")
     if test_database_connection() and setup_database():
         print("✅ جميع الإعدادات صحيحة!")
