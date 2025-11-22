@@ -1452,7 +1452,7 @@ async def get_new_wallet_type(update: Update, context: CallbackContext) -> int:
         return NEW_WALLET_TYPE
 
 async def get_wallet_address(update: Update, context: CallbackContext) -> int:
-    """استقبال عنوان المحفظة الإلكترونية من المستخدم"""
+    """استقبال عنوان المحفظة الإلكترونية من المستخدم - مع دعم التعديل"""
     wallet_address = update.message.text.strip()
     
     if len(wallet_address) < 5:
@@ -1464,6 +1464,17 @@ async def get_wallet_address(update: Update, context: CallbackContext) -> int:
     
     context.user_data['wallet_address'] = wallet_address
     save_registration_progress(update.effective_user.id, 'CONFIRMATION', context.user_data)
+    
+    # ⭐ التحقق إذا كنا في وضع التعديل
+    if context.user_data.get('editing_payment'):
+        # مسح العلامة والعودة للقائمة
+        del context.user_data['editing_payment']
+        await update.message.reply_text(
+            "✅ **تم تحديث بيانات المحفظة بنجاح!**\n\n"
+            "🔁 **جاري العودة إلى قائمة التعديل...**"
+        )
+        return await show_edit_options(update, context)
+    
     return await show_confirmation(update, context)
 
 async def get_transfer_details(update: Update, context: CallbackContext) -> int:
@@ -1553,8 +1564,21 @@ async def get_transfer_details(update: Update, context: CallbackContext) -> int:
         
         user_data['transfer_company'] = company
         save_registration_progress(update.effective_user.id, 'CONFIRMATION', context.user_data)
+        
+        # ⭐ التحقق إذا كنا في وضع التعديل
+        if context.user_data.get('editing_payment'):
+            # مسح العلامة والعودة للقائمة
+            del context.user_data['editing_payment']
+            await update.message.reply_text(
+                "✅ **تم تحديث بيانات الحوالة بنجاح!**\n\n"
+                "🔁 **جاري العودة إلى قائمة التعديل...**"
+            )
+            return await show_edit_options(update, context)
+        
         return await show_confirmation(update, context)
 
+
+        
 async def show_confirmation(update: Update, context: CallbackContext) -> int:
     """عرض ملخص البيانات النهائي للمستخدم للتأكيد"""
     user_data = context.user_data
@@ -2336,7 +2360,7 @@ async def edit_email(update: Update, context: CallbackContext) -> int:
         return await show_edit_options(update, context)
 
 async def edit_payment_method(update: Update, context: CallbackContext) -> int:
-    """تعديل طريقة الدفع"""
+    """تعديل طريقة الدفع - النسخة المصححة"""
     try:
         payment_method = update.message.text
         context.user_data['payment_method'] = payment_method
@@ -2346,6 +2370,9 @@ async def edit_payment_method(update: Update, context: CallbackContext) -> int:
         for key in payment_keys:
             if key in context.user_data:
                 del context.user_data[key]
+        
+        # ⭐ الإضافة: وضع علامة أننا في وضع التعديل
+        context.user_data['editing_payment'] = True
         
         if payment_method == 'محفظة الكترونية':
             wallet_buttons = [ELECTRONIC_WALLETS[i:i+2] for i in range(0, len(ELECTRONIC_WALLETS), 2)]
