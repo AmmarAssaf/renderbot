@@ -20,16 +20,6 @@ import urllib.parse
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from telegram.ext import Application
-from flask import Flask
-
-# إذا كنت تستخدم webhooks مع Flask
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
 
 
 # إعداد التسجيل
@@ -3315,10 +3305,7 @@ def main():
 
 if __name__ == '__main__':
 
-    # احصل على المنفذ من متغير البيئة، أو استخدم 10000 افتراضيًا
-    port = int(os.environ.get('PORT', 10000))
-    # ابدأ الخدمة على المنفذ المحدد
-    app.run(host='0.0.0.0', port=port)
+
 
     print("🔍 اختبار الإعدادات...")
     if test_database_connection() and setup_database():
