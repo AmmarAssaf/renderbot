@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackContext, CallbackQueryHandler
+from telegram import ReplyKeyboardRemove
 import random
 import string
 import os
@@ -50,21 +51,29 @@ def get_database_config():
         }
 
 def create_connection():
-    """إنشاء اتصال بقاعدة البيانات"""
-    try:
-        config = get_database_config()
-        conn = psycopg2.connect(
-            dbname=config['dbname'],
-            user=config['user'],
-            password=config['password'],
-            host=config['host'],
-            port=config['port']
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
-        return None
-
+    """إنشاء اتصال بقاعدة البيانات - نسخة محسنة"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            config = get_database_config()
+            conn = psycopg2.connect(
+                dbname=config['dbname'],
+                user=config['user'],
+                password=config['password'],
+                host=config['host'],
+                port=config['port'],
+                connect_timeout=10
+            )
+            logger.info(f"✅ تم الاتصال بقاعدة البيانات (محاولة {attempt + 1})")
+            return conn
+        except Exception as e:
+            logger.error(f"❌ فشل الاتصال بقاعدة البيانات (محاولة {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(2)
+    
+    logger.error("❌ فشل جميع محاولات الاتصال بقاعدة البيانات")
+    return None
 # ==============================
 # 🤖 إعدادات البوت لـ Render
 # ==============================
@@ -79,6 +88,7 @@ ALLOWED_USER_IDS = [OWNER_USER_ID, TELEGRAM_OWNER_ID] if OWNER_USER_ID and TELEG
 # ==============================
 # 🎯 تعريف مراحل المحادثة (States)
 # ==============================
+
 (
     REFERRAL_STAGE,       # 0: مرحلة كود الدعوة
     FULL_NAME,            # 1: مرحلة الاسم الكامل
@@ -111,7 +121,6 @@ ALLOWED_USER_IDS = [OWNER_USER_ID, TELEGRAM_OWNER_ID] if OWNER_USER_ID and TELEG
     EDIT_SOCIAL_MEDIA,    # 28: تعديل وسائل التواصل
     EDIT_PAYMENT_METHOD   # 29: تعديل طريقة الدفع
 ) = range(30)
-
 # ==============================
 # 🌍 قائمة البلدان ورموز الهاتف
 # ==============================
@@ -127,8 +136,10 @@ COUNTRIES = {
 # ==============================
 ELECTRONIC_WALLETS = [
     "PayPal", "Payeer", "Perfect Money", "Skrill", "Neteller", "WebMoney",
-    "فودافون كاش", "أورانج موني", "اتصالات كاش", "زين كاش", "محفظة أخرى"
+    "فودافون كاش", "أورانج موني", "اتصالات كاش", "زين كاش"
 ]
+# قائمة منفصلة للخيار الإضافي
+WALLET_CHOICES = ELECTRONIC_WALLETS + ["محفظة أخرى"]
 
 # ==============================
 # 🏢 شركات الحوالات المالية
@@ -141,6 +152,7 @@ TRANSFER_COMPANIES = [
 # ==============================
 # 🗃️ دوال قاعدة البيانات
 # ==============================
+
 def setup_database():
     """إنشاء الجداول المطلوبة في قاعدة البيانات"""
     try:
@@ -885,21 +897,34 @@ async def get_country(update: Update, context: CallbackContext) -> int:
     return GENDER
 
 async def get_gender(update: Update, context: CallbackContext) -> int:
-    """استقبال الجنس المختار من المستخدم"""
-    gender = update.message.text
-    if gender not in ['ذكر', 'أنثى']:
-        await update.message.reply_text("❌ الرجاء اختيار 'ذكر' أو 'أنثى'.")
+    """استقبال الجنس المختار من المستخدم - النسخة المصححة"""
+    try:
+        gender = update.message.text
+        if gender not in ['ذكر', 'أنثى']:
+            await update.message.reply_text(
+                "❌ الرجاء اختيار 'ذكر' أو 'أنثى' من القائمة.",
+                reply_markup=ReplyKeyboardMarkup([['ذكر', 'أنثى']], one_time_keyboard=True)
+            )
+            return GENDER
+        
+        context.user_data['gender'] = gender
+        save_registration_progress(update.effective_user.id, 'BIRTH_YEAR', context.user_data)
+        
+        await update.message.reply_text(
+            f"🚻 تم التسجيل كـ: {gender}\n\n"
+            "🎂 **الآن، ما هو عام ولادتك؟**\n"
+            "(أدخل السنة بأربعة أرقام، مثال: 1990)",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return BIRTH_YEAR
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في get_gender: {e}")
+        await update.message.reply_text(
+            "❌ حدث خطأ. الرجاء اختيار الجنس مرة أخرى:",
+            reply_markup=ReplyKeyboardMarkup([['ذكر', 'أنثى']], one_time_keyboard=True)
+        )
         return GENDER
-    
-    context.user_data['gender'] = gender
-    save_registration_progress(update.effective_user.id, 'BIRTH_YEAR', context.user_data)
-    
-    await update.message.reply_text(
-        f"🚻 تم التسجيل كـ: {gender}\n\n"
-        "🎂 **الآن، ما هو عام ولادتك؟**\n"
-        "(أدخل السنة بأربعة أرقام، مثال: 1990)"
-    )
-    return BIRTH_YEAR
 
 async def get_birth_year(update: Update, context: CallbackContext) -> int:
     """استقبال عام الولادة من المستخدم"""
@@ -1378,12 +1403,17 @@ async def get_payment_method(update: Update, context: CallbackContext) -> int:
         return PAYMENT_METHOD
 
 async def get_wallet_type(update: Update, context: CallbackContext) -> int:
-    """استقبال نوع المحفظة الإلكترونية من المستخدم"""
+    """استقبال نوع المحفظة الإلكترونية من المستخدم - النسخة المحسنة"""
     try:
         wallet_type = update.message.text
         
-        if wallet_type not in ELECTRONIC_WALLETS:
-            await update.message.reply_text("❌ الرجاء اختيار نوع محفظة من القائمة المحددة.")
+        wallet_buttons = [WALLET_CHOICES[i:i+2] for i in range(0, len(WALLET_CHOICES), 2)]
+        
+        if wallet_type not in WALLET_CHOICES:
+            await update.message.reply_text(
+                "❌ الرجاء اختيار نوع محفظة من القائمة المحددة.",
+                reply_markup=ReplyKeyboardMarkup(wallet_buttons, one_time_keyboard=True)
+            )
             return WALLET_TYPE
         
         if wallet_type == "محفظة أخرى":
@@ -1391,7 +1421,8 @@ async def get_wallet_type(update: Update, context: CallbackContext) -> int:
                 "🆕 **إضافة محفظة جديدة**\n\n"
                 "📝 **أدخل اسم المحفظة الجديدة:**\n"
                 "(الحد الأقصى 20 حرف فقط)\n\n"
-                "مثال: Binance, Trust Wallet, إلخ..."
+                "مثال: Binance, Trust Wallet, إلخ...",
+                reply_markup=ReplyKeyboardRemove()
             )
             save_registration_progress(update.effective_user.id, 'NEW_WALLET_TYPE', context.user_data)
             return NEW_WALLET_TYPE
@@ -1401,14 +1432,19 @@ async def get_wallet_type(update: Update, context: CallbackContext) -> int:
                 f"✅ تم اختيار نوع المحفظة: {wallet_type}\n\n"
                 "🔗 **الآن، أدخل عنوان المحفظة الإلكترونية:**\n"
                 "(انسخ العنوان كما هو من تطبيق المحفظة)\n\n"
-                "مثال: 0x742d35Cc6634C0532925a3b8D..."
+                "مثال: 0x742d35Cc6634C0532925a3b8D...",
+                reply_markup=ReplyKeyboardRemove()
             )
             save_registration_progress(update.effective_user.id, 'WALLET_ADDRESS', context.user_data)
             return WALLET_ADDRESS
             
     except Exception as e:
         logger.error(f"❌ خطأ في get_wallet_type: {e}")
-        await update.message.reply_text("❌ حدث خطأ. الرجاء اختيار نوع المحفظة مرة أخرى:")
+        wallet_buttons = [WALLET_CHOICES[i:i+2] for i in range(0, len(WALLET_CHOICES), 2)]
+        await update.message.reply_text(
+            "❌ حدث خطأ. الرجاء اختيار نوع المحفظة مرة أخرى:",
+            reply_markup=ReplyKeyboardMarkup(wallet_buttons, one_time_keyboard=True)
+        )
         return WALLET_TYPE
 
 async def get_new_wallet_type(update: Update, context: CallbackContext) -> int:
@@ -1842,6 +1878,7 @@ async def show_final_summary(update: Update, context: CallbackContext) -> int:
     
     return ConversationHandler.END
 
+
 # ==============================
 # 🔧 الأوامر الإضافية
 # ==============================
@@ -1930,6 +1967,41 @@ async def show_profile(update: Update, context: CallbackContext):
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ في عرض الملف الشخصي")
         logger.error(f"Error: {e}")
+
+# إضافة هذا في قسم دوال المحادثة الرئيسية
+async def comment_system_start(update: Update, context: CallbackContext):
+    """بدء نظام التعليقات - نسخة محسنة"""
+    user_id = update.effective_user.id
+    
+    # التحقق من تسجيل المستخدم
+    if not await check_user_registration(user_id):
+        await update.message.reply_text(
+            "❌ **يجب أن تكون مسجلاً في النظام أولاً**\n\n"
+            "استخدم /start لتسجيل حساب جديد"
+        )
+        return
+    
+    # عرض خيارات نظام التعليقات
+    keyboard = [
+        [InlineKeyboardButton("📋 المهام المتاحة", callback_data="available_tasks")],
+        [InlineKeyboardButton("📊 تقدمي في التعليقات", callback_data="my_comment_progress")],
+        [InlineKeyboardButton("🔙 الرجوع للقائمة الرئيسية", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "💬 **نظام مكافآت التعليقات**\n\n"
+        "🎯 **كيفية العمل:**\n"
+        "• اختر مهمة تعليق من المهام المتاحة\n"
+        "• اكتب تعليقاً على المنشور المطلوب\n" 
+        "• احصل على مكافأة فور التحقق\n\n"
+        "💰 **المميزات:**\n"
+        "• مكافآت فورية\n"
+        "• مهام متنوعة\n"
+        "• مرونة في المشاركة\n\n"
+        "اختر الخيار المناسب:",
+        reply_markup=reply_markup
+    )
 
 async def show_invite(update: Update, context: CallbackContext):
     """عرض كود الدعوة والإحصائيات"""
@@ -2809,7 +2881,7 @@ comment_system = CommentVerificationSystem()
 # ==============================
 
 async def start_comment_system(update: Update, context: CallbackContext):
-    """بدء نظام التعليقات للمستخدم"""
+    """بدء نظام التعليقات - النسخة المعدلة"""
     user_id = update.effective_user.id
     
     # التحقق من تسجيل المستخدم
@@ -2824,14 +2896,19 @@ async def start_comment_system(update: Update, context: CallbackContext):
     active_tasks = comment_system.get_active_tasks()
     
     if not active_tasks:
+        # 🔽 أضف زر العودة
+        keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
             "📭 **لا توجد مهام تعليقات نشطة حالياً**\n\n"
             "⏳ سيتم إضافة مهام جديدة قريباً\n"
-            "🔔 سيتم إعلامك عند توفر مهام جديدة"
+            "🔔 سيتم إعلامك عند توفر مهام جديدة",
+            reply_markup=reply_markup
         )
         return
     
-    # عرض المهام المتاحة
+    # عرض المهام المتاحة مع زر العودة
     keyboard = []
     for task in active_tasks:
         button_text = (
@@ -2840,6 +2917,7 @@ async def start_comment_system(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"comment_task_{task['id']}")])
     
     keyboard.append([InlineKeyboardButton("📊 عرض تقدمي", callback_data="comment_progress")])
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")])  # 🔽 أضف هذا السطر
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -3021,7 +3099,7 @@ async def handle_comment_text_submission(update: Update, context: CallbackContex
     context.user_data['verification_code'] = None
 
 async def show_comment_progress(update: Update, context: CallbackContext):
-    """عرض تقدم المستخدم في التعليقات"""
+    """عرض تقدم المستخدم في التعليقات - النسخة المعدلة"""
     user_id = update.effective_user.id
     
     progress = comment_system.get_user_progress(user_id)
@@ -3036,17 +3114,21 @@ async def show_comment_progress(update: Update, context: CallbackContext):
         f"⏳ **المهام قيد الانتظار:** {progress['pending_tasks']}\n"
         f"💰 **إجمالي المكافآت:** {progress['total_rewards']} ريال\n\n"
         f"🎯 **للمشاركة في مهام جديدة:**\n"
-        f"استخدم /comment\n\n"
+        f"استخدم /comments\n\n"
         f"💡 **نصائح:**\n"
         f"• شارك بآراء صادقة\n"
         f"• تأكد من إضافة كود التحقق\n"
         f"• لا تحذف التعليقات بعد التحقق"
     )
     
+    # 🔽 أضف زر العودة
+    keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     if hasattr(update, 'callback_query'):
-        await update.callback_query.message.reply_text(progress_message)
+        await update.callback_query.message.reply_text(progress_message, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(progress_message)
+        await update.message.reply_text(progress_message, reply_markup=reply_markup)
 
 async def handle_comment_back(update: Update, context: CallbackContext):
     """العودة لقائمة المهام"""
@@ -3217,6 +3299,37 @@ def test_database_connection():
         return False
 
 
+async def handle_comment_main_menu(update: Update, context: CallbackContext):
+    """معالجة خيارات القائمة الرئيسية لنظام التعليقات"""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data
+    
+    if choice == "available_tasks":
+        # استخدام النظام الحالي للتعليقات
+        await start_comment_system(update, context)
+    elif choice == "my_comment_progress":
+        # استخدام دالة عرض التقدم الحالية
+        await show_comment_progress(update, context)
+    elif choice == "main_menu":
+        await query.edit_message_text(
+            "🔙 **العودة إلى القائمة الرئيسية**\n\n"
+            "استخدم الأوامر التالية:\n"
+            "/start - بدء التسجيل\n"
+            "/profile - عرض الملف الشخصي\n" 
+            "/invite - كود الدعوة\n"
+            "/comments - نظام التعليقات\n"
+            "/support - الدعم الفني"
+        )
+
+async def handle_comment_back_to_main(update: Update, context: CallbackContext):
+    """العودة للقائمة الرئيسية للتعليقات"""
+    query = update.callback_query
+    await query.answer()
+    await comment_system_start(update, context)
+
+
 def main():
     """الدالة الرئيسية لتشغيل البوت"""
     
@@ -3309,6 +3422,10 @@ def main():
 
     # معالج النص الخاص بنظام التعليقات
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment_text_submission))
+
+    application.add_handler(CommandHandler("comments", comment_system_start))
+    application.add_handler(CallbackQueryHandler(handle_comment_main_menu, pattern="^(available_tasks|my_comment_progress|main_menu)$"))
+    application.add_handler(CallbackQueryHandler(handle_comment_back_to_main, pattern="^comment_back_to_main$"))
    
     print("🤖 البوت المتكامل يعمل الآن...")
     print("🏢 مؤسسة الترويج الإعلامي")
