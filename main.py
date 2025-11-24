@@ -1462,6 +1462,7 @@ async def get_facebook_url(update: Update, context: CallbackContext) -> int:
             f"📊 العدد الإجمالي: {len(context.user_data['social_media']['facebook'])}"
         )
         
+        # ⭐ التعديل: العودة إلى القائمة الرئيسية بعد الإضافة
         return await show_social_media_menu(update, context)
         
     except Exception as e:
@@ -1511,6 +1512,7 @@ async def get_instagram_url(update: Update, context: CallbackContext) -> int:
             f"📊 العدد الإجمالي: {len(context.user_data['social_media']['instagram'])}"
         )
         
+        # ⭐ التعديل: العودة إلى القائمة الرئيسية بعد الإضافة
         return await show_social_media_menu(update, context)
         
     except Exception as e:
@@ -1561,6 +1563,7 @@ async def get_youtube_url(update: Update, context: CallbackContext) -> int:
             f"📊 العدد الإجمالي: {len(context.user_data['social_media']['youtube'])}"
         )
         
+        # ⭐ التعديل: العودة إلى القائمة الرئيسية بعد الإضافة
         return await show_social_media_menu(update, context)
         
     except Exception as e:
@@ -1609,10 +1612,8 @@ async def get_other_social_media(update: Update, context: CallbackContext) -> in
             f"📊 العدد الإجمالي: {len(context.user_data['social_media']['other'])}"
         )
         
-        await update.message.reply_text(
-            "أدخل رابطاً آخر أو اكتب 'انتهيت' للمتابعة:"
-        )
-        return OTHER_SOCIAL_MEDIA
+        # ⭐ التعديل: العودة إلى القائمة الرئيسية بعد الإضافة
+        return await show_social_media_menu(update, context)
         
     except Exception as e:
         logger.error(f"❌ خطأ في get_other_social_media: {e}")
@@ -1697,13 +1698,23 @@ async def proceed_to_payment(update: Update, context: CallbackContext) -> int:
     if context.user_data.get('editing_social'):
         # مسح العلامة والعودة للقائمة
         del context.user_data['editing_social']
-        await update.callback_query.answer()
-        await update.callback_query.message.reply_text(
-            "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
-            "🔁 **جاري العودة إلى قائمة التعديل...**"
-        )
+        
+        # إرسال رسالة تأكيد والعودة إلى قائمة التعديل
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.message.reply_text(
+                "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
+                "🔁 **جاري العودة إلى قائمة التعديل...**"
+            )
+        else:
+            await update.message.reply_text(
+                "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
+                "🔁 **جاري العودة إلى قائمة التعديل...**"
+            )
+        
         return await show_edit_options(update, context)
     
+    # إذا لم نكن في وضع التعديل، نستمر إلى طريقة الدفع كالمعتاد
     payment_keyboard = [['محفظة الكترونية', 'حوالة مالية']]
     reply_markup = ReplyKeyboardMarkup(payment_keyboard, one_time_keyboard=True)
     
