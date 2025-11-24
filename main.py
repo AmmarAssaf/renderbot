@@ -15,6 +15,8 @@ import os
 import urllib.parse
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import hashlib
+import secrets
 
 # إعداد التسجيل
 logging.basicConfig(
@@ -74,6 +76,7 @@ def create_connection():
     
     logger.error("❌ فشل جميع محاولات الاتصال بقاعدة البيانات")
     return None
+
 # ==============================
 # 🤖 إعدادات البوت لـ Render
 # ==============================
@@ -121,6 +124,7 @@ ALLOWED_USER_IDS = [OWNER_USER_ID, TELEGRAM_OWNER_ID] if OWNER_USER_ID and TELEG
     EDIT_SOCIAL_MEDIA,    # 28: تعديل وسائل التواصل
     EDIT_PAYMENT_METHOD   # 29: تعديل طريقة الدفع
 ) = range(30)
+
 # ==============================
 # 🌍 قائمة البلدان ورموز الهاتف
 # ==============================
@@ -220,6 +224,53 @@ def setup_database():
                 transfer_company VARCHAR(100),
                 setup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES user_profiles(user_id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # جداول نظام التعليقات
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS comment_verification_tasks (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                post_url VARCHAR(500),
+                platform VARCHAR(50),
+                unique_code VARCHAR(20) UNIQUE,
+                required_comment_text VARCHAR(200),
+                status VARCHAR(20) DEFAULT 'pending',
+                user_comment_text TEXT,
+                reward_amount DECIMAL(10,2) DEFAULT 0.00,
+                verified_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_rewards (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                task_id INTEGER,
+                reward_amount DECIMAL(10,2),
+                reward_type VARCHAR(50),
+                status VARCHAR(20) DEFAULT 'pending',
+                paid_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES comment_verification_tasks(id) ON DELETE CASCADE
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS active_comment_tasks (
+                id SERIAL PRIMARY KEY,
+                platform VARCHAR(50),
+                post_url VARCHAR(500),
+                description VARCHAR(300),
+                required_comment_template VARCHAR(200),
+                reward_amount DECIMAL(10,2),
+                max_participants INTEGER,
+                current_participants INTEGER DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'active',
+                created_by BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -520,6 +571,299 @@ def extract_youtube_username(url: str) -> str:
     except Exception as e:
         logger.error(f"❌ خطأ في استخراج اسم يوتيوب: {e}")
         return url
+
+# ==============================
+# 💬 نظام التحقق من التعليقات
+# ==============================
+
+class CommentVerificationSystem:
+    def __init__(self):
+        self.setup_database()
+    
+    def setup_database(self):
+        """إعداد جداول التحقق من التعليقات في قاعدة البيانات"""
+        conn = None
+        try:
+            conn = create_connection()
+            if not conn:
+                logger.error("❌ فشل الاتصال بقاعدة البيانات في setup_database")
+                return
+                
+            cursor = conn.cursor()
+            
+            # جدول مهام التحقق
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS comment_verification_tasks (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    post_url VARCHAR(500),
+                    platform VARCHAR(50),
+                    unique_code VARCHAR(20) UNIQUE,
+                    required_comment_text VARCHAR(200),
+                    status VARCHAR(20) DEFAULT 'pending',
+                    user_comment_text TEXT,
+                    reward_amount DECIMAL(10,2) DEFAULT 0.00,
+                    verified_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # جدول المكافآت
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_rewards (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    task_id INTEGER,
+                    reward_amount DECIMAL(10,2),
+                    reward_type VARCHAR(50),
+                    status VARCHAR(20) DEFAULT 'pending',
+                    paid_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (task_id) REFERENCES comment_verification_tasks(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # جدول المهام النشطة
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS active_comment_tasks (
+                    id SERIAL PRIMARY KEY,
+                    platform VARCHAR(50),
+                    post_url VARCHAR(500),
+                    description VARCHAR(300),
+                    required_comment_template VARCHAR(200),
+                    reward_amount DECIMAL(10,2),
+                    max_participants INTEGER,
+                    current_participants INTEGER DEFAULT 0,
+                    status VARCHAR(20) DEFAULT 'active',
+                    created_by BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            conn.commit()
+            logger.info("✅ تم إعداد جداول نظام التحقق من التعليقات بنجاح!")
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في إعداد جداول التحقق: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+    
+    def generate_unique_code(self, user_id: int) -> str:
+        """إنشاء كود تحقق فريد للمستخدم"""
+        base_string = f"{user_id}_{datetime.now().timestamp()}_{secrets.token_hex(4)}"
+        unique_code = hashlib.md5(base_string.encode()).hexdigest()[:8].upper()
+        return f"CMT{unique_code}"
+    
+    def create_verification_task(self, user_id: int, task_data: dict) -> dict:
+        """إنشاء مهمة تحقق جديدة للمستخدم"""
+        conn = None
+        try:
+            conn = create_connection()
+            if not conn:
+                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
+                
+            cursor = conn.cursor()
+            
+            unique_code = self.generate_unique_code(user_id)
+            
+            cursor.execute('''
+                INSERT INTO comment_verification_tasks 
+                (user_id, post_url, platform, unique_code, required_comment_text, reward_amount)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (
+                user_id,
+                task_data['post_url'],
+                task_data['platform'],
+                unique_code,
+                task_data.get('required_comment_template', 'شارك برأيك في هذا المنتج'),
+                task_data['reward_amount']
+            ))
+            
+            # تحديث عدد المشاركين في المهمة النشطة
+            if 'task_id' in task_data:
+                cursor.execute('''
+                    UPDATE active_comment_tasks 
+                    SET current_participants = current_participants + 1 
+                    WHERE id = %s
+                ''', (task_data['task_id'],))
+            
+            conn.commit()
+            
+            return {
+                'success': True,
+                'unique_code': unique_code,
+                'message': 'تم إنشاء المهمة بنجاح'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في إنشاء مهمة التحقق: {e}")
+            if conn:
+                conn.rollback()
+            return {'success': False, 'message': 'حدث خطأ في إنشاء المهمة'}
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+    
+    def verify_comment_submission(self, user_id: int, unique_code: str, user_comment: str) -> dict:
+        """التحقق من تقديم التعليق"""
+        conn = None
+        try:
+            conn = create_connection()
+            if not conn:
+                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
+                
+            cursor = conn.cursor()
+            
+            # البحث عن المهمة
+            cursor.execute('''
+                SELECT id, post_url, platform, required_comment_text, reward_amount, status
+                FROM comment_verification_tasks 
+                WHERE user_id = %s AND unique_code = %s
+            ''', (user_id, unique_code))
+            
+            task = cursor.fetchone()
+            
+            if not task:
+                return {'success': False, 'message': '❌ لم يتم العثور على المهمة'}
+            
+            task_id, post_url, platform, required_text, reward_amount, status = task
+            
+            if status != 'pending':
+                return {'success': False, 'message': '❌ تم التحقق من هذه المهمة مسبقاً'}
+            
+            # التحقق من وجود الكود الفريد في التعليق
+            if unique_code not in user_comment:
+                return {'success': False, 'message': '❌ لم يتم العثور على كود التحقق في التعليق'}
+            
+            # تحديث حالة المهمة
+            cursor.execute('''
+                UPDATE comment_verification_tasks 
+                SET status = 'verified', user_comment_text = %s, verified_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            ''', (user_comment, task_id))
+            
+            # تسجيل المكافأة
+            cursor.execute('''
+                INSERT INTO user_rewards (user_id, task_id, reward_amount, reward_type, status)
+                VALUES (%s, %s, %s, 'comment_verification', 'approved')
+            ''', (user_id, task_id, reward_amount))
+            
+            conn.commit()
+            
+            return {
+                'success': True, 
+                'message': f'✅ تم التحقق من تعليقك بنجاح! مكافأة: {reward_amount} ريال',
+                'reward_amount': reward_amount
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في التحقق من التعليق: {e}")
+            if conn:
+                conn.rollback()
+            return {'success': False, 'message': 'حدث خطأ في التحقق'}
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+
+    def get_active_tasks(self) -> list:
+        """الحصول على المهام النشطة"""
+        conn = None
+        try:
+            conn = create_connection()
+            if not conn:
+                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_active_tasks")
+                return []
+                
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT id, platform, post_url, description, required_comment_template, reward_amount, 
+                       max_participants, current_participants
+                FROM active_comment_tasks 
+                WHERE status = 'active' AND (current_participants < max_participants OR max_participants = 0)
+                ORDER BY created_at DESC
+            ''')
+            
+            tasks = []
+            for row in cursor.fetchall():
+                tasks.append({
+                    'id': row[0],
+                    'platform': row[1],
+                    'post_url': row[2],
+                    'description': row[3],
+                    'required_comment_template': row[4],
+                    'reward_amount': float(row[5]),
+                    'max_participants': row[6],
+                    'current_participants': row[7],
+                    'available_slots': row[6] - row[7] if row[6] > 0 else 999
+                })
+            
+            return tasks
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب المهام النشطة: {e}")
+            return []
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+
+    def get_user_progress(self, user_id: int) -> dict:
+        """الحصول على تقدم المستخدم"""
+        conn = None
+        try:
+            conn = create_connection()
+            if not conn:
+                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_user_progress")
+                return {'success': False}
+                
+            cursor = conn.cursor()
+            
+            # عدد المهام المكتملة
+            cursor.execute('''
+                SELECT COUNT(*) FROM comment_verification_tasks 
+                WHERE user_id = %s AND status = 'verified'
+            ''', (user_id,))
+            completed_tasks = cursor.fetchone()[0]
+            
+            # إجمالي المكافآت
+            cursor.execute('''
+                SELECT SUM(reward_amount) FROM user_rewards 
+                WHERE user_id = %s AND status = 'approved'
+            ''', (user_id,))
+            total_rewards_result = cursor.fetchone()
+            total_rewards = float(total_rewards_result[0]) if total_rewards_result[0] else 0.0
+            
+            # المهام قيد الانتظار
+            cursor.execute('''
+                SELECT COUNT(*) FROM comment_verification_tasks 
+                WHERE user_id = %s AND status = 'pending'
+            ''', (user_id,))
+            pending_tasks = cursor.fetchone()[0]
+            
+            return {
+                'completed_tasks': completed_tasks,
+                'pending_tasks': pending_tasks,
+                'total_rewards': total_rewards,
+                'success': True
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب تقدم المستخدم: {e}")
+            return {'success': False}
+        finally:
+            if conn:
+                cursor.close()
+                conn.close()
+
+# إنشاء كائن النظام العالمي
+comment_system = CommentVerificationSystem()
 
 # ==============================
 # 🚀 دوال المحادثة الرئيسية
@@ -1349,6 +1693,17 @@ async def show_social_media_menu(update: Update, context: CallbackContext) -> in
 
 async def proceed_to_payment(update: Update, context: CallbackContext) -> int:
     """الانتقال إلى مرحلة اختيار طريقة الدفع"""
+    # ⭐ التحقق إذا كنا في وضع التعديل لوسائل التواصل
+    if context.user_data.get('editing_social'):
+        # مسح العلامة والعودة للقائمة
+        del context.user_data['editing_social']
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text(
+            "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
+            "🔁 **جاري العودة إلى قائمة التعديل...**"
+        )
+        return await show_edit_options(update, context)
+    
     payment_keyboard = [['محفظة الكترونية', 'حوالة مالية']]
     reply_markup = ReplyKeyboardMarkup(payment_keyboard, one_time_keyboard=True)
     
@@ -1612,8 +1967,6 @@ async def get_transfer_details(update: Update, context: CallbackContext) -> int:
         
         return await show_confirmation(update, context)
 
-
-        
 async def show_confirmation(update: Update, context: CallbackContext) -> int:
     """عرض ملخص البيانات النهائي للمستخدم للتأكيد"""
     user_data = context.user_data
@@ -1878,7 +2231,6 @@ async def show_final_summary(update: Update, context: CallbackContext) -> int:
     
     return ConversationHandler.END
 
-
 # ==============================
 # 🔧 الأوامر الإضافية
 # ==============================
@@ -1967,41 +2319,6 @@ async def show_profile(update: Update, context: CallbackContext):
     except Exception as e:
         await update.message.reply_text("❌ حدث خطأ في عرض الملف الشخصي")
         logger.error(f"Error: {e}")
-
-# إضافة هذا في قسم دوال المحادثة الرئيسية
-async def comment_system_start(update: Update, context: CallbackContext):
-    """بدء نظام التعليقات - نسخة محسنة"""
-    user_id = update.effective_user.id
-    
-    # التحقق من تسجيل المستخدم
-    if not await check_user_registration(user_id):
-        await update.message.reply_text(
-            "❌ **يجب أن تكون مسجلاً في النظام أولاً**\n\n"
-            "استخدم /start لتسجيل حساب جديد"
-        )
-        return
-    
-    # عرض خيارات نظام التعليقات
-    keyboard = [
-        [InlineKeyboardButton("📋 المهام المتاحة", callback_data="available_tasks")],
-        [InlineKeyboardButton("📊 تقدمي في التعليقات", callback_data="my_comment_progress")],
-        [InlineKeyboardButton("🔙 الرجوع للقائمة الرئيسية", callback_data="main_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "💬 **نظام مكافآت التعليقات**\n\n"
-        "🎯 **كيفية العمل:**\n"
-        "• اختر مهمة تعليق من المهام المتاحة\n"
-        "• اكتب تعليقاً على المنشور المطلوب\n" 
-        "• احصل على مكافأة فور التحقق\n\n"
-        "💰 **المميزات:**\n"
-        "• مكافآت فورية\n"
-        "• مهام متنوعة\n"
-        "• مرونة في المشاركة\n\n"
-        "اختر الخيار المناسب:",
-        reply_markup=reply_markup
-    )
 
 async def show_invite(update: Update, context: CallbackContext):
     """عرض كود الدعوة والإحصائيات"""
@@ -2229,6 +2546,8 @@ async def handle_edit_choice(update: Update, context: CallbackContext) -> int:
             return EDIT_EMAIL
             
         elif choice == "edit_social":
+            # ⭐ الإضافة: وضع علامة أننا في وضع التعديل لوسائل التواصل
+            context.user_data['editing_social'] = True
             await query.edit_message_text(
                 "📱 **تعديل وسائل التواصل**\n\n"
                 "جاري الانتقال إلى قائمة إدارة الحسابات..."
@@ -2560,325 +2879,65 @@ async def bot_stats(update: Update, context: CallbackContext):
     except Exception as e:
         await update.message.reply_text(f"❌ حدث خطأ في جلب الإحصائيات: {e}")
 
-async def edit_social_media(update: Update, context: CallbackContext) -> int:
-    """تعديل وسائل التواصل - الانتقال للقائمة الرئيسية"""
-    try:
-        await update.callback_query.answer()
-        await update.callback_query.message.reply_text(
-            "📱 **تعديل وسائل التواصل**\n\n"
-            "جاري الانتقال إلى قائمة إدارة الحسابات..."
+# ==============================
+# 💬 دوال نظام التعليقات
+# ==============================
+
+async def comment_system_start(update: Update, context: CallbackContext):
+    """بدء نظام التعليقات - نسخة محسنة"""
+    user_id = update.effective_user.id
+    
+    # التحقق من تسجيل المستخدم
+    if not await check_user_registration(user_id):
+        await update.message.reply_text(
+            "❌ **يجب أن تكون مسجلاً في النظام أولاً**\n\n"
+            "استخدم /start لتسجيل حساب جديد"
         )
-        return await show_social_media_menu(update, context)
-        
-    except Exception as e:
-        logger.error(f"❌ خطأ في edit_social_media: {e}")
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="❌ حدث خطأ في الانتقال لتعديل وسائل التواصل. جاري المحاولة..."
+        return
+    
+    # عرض خيارات نظام التعليقات
+    keyboard = [
+        [InlineKeyboardButton("📋 المهام المتاحة", callback_data="available_tasks")],
+        [InlineKeyboardButton("📊 تقدمي في التعليقات", callback_data="my_comment_progress")],
+        [InlineKeyboardButton("🔙 الرجوع للقائمة الرئيسية", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "💬 **نظام مكافآت التعليقات**\n\n"
+        "🎯 **كيفية العمل:**\n"
+        "• اختر مهمة تعليق من المهام المتاحة\n"
+        "• اكتب تعليقاً على المنشور المطلوب\n" 
+        "• احصل على مكافأة فور التحقق\n\n"
+        "💰 **المميزات:**\n"
+        "• مكافآت فورية\n"
+        "• مهام متنوعة\n"
+        "• مرونة في المشاركة\n\n"
+        "اختر الخيار المناسب:",
+        reply_markup=reply_markup
+    )
+
+async def handle_comment_main_menu(update: Update, context: CallbackContext):
+    """معالجة خيارات القائمة الرئيسية لنظام التعليقات"""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data
+    
+    if choice == "available_tasks":
+        await start_comment_system(update, context)
+    elif choice == "my_comment_progress":
+        await show_comment_progress(update, context)
+    elif choice == "main_menu":
+        await query.edit_message_text(
+            "🔙 **العودة إلى القائمة الرئيسية**\n\n"
+            "استخدم الأوامر التالية:\n"
+            "/start - بدء التسجيل\n"
+            "/profile - عرض الملف الشخصي\n" 
+            "/invite - كود الدعوة\n"
+            "/comments - نظام التعليقات\n"
+            "/support - الدعم الفني"
         )
-        return await show_social_media_menu(update, context)
-
-
-# ==============================
-# 💬 نظام التحقق من التعليقات - الإضافة المطلوبة
-# ==============================
-
-import hashlib
-import secrets
-from datetime import datetime
-
-class CommentVerificationSystem:
-    def __init__(self):
-        self.setup_database()
-    
-    def setup_database(self):
-        """إعداد جداول التحقق من التعليقات في قاعدة البيانات"""
-        conn = None
-        try:
-            conn = create_connection()
-            if not conn:
-                logger.error("❌ فشل الاتصال بقاعدة البيانات في setup_database")
-                return
-                
-            cursor = conn.cursor()
-            
-            # جدول مهام التحقق
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS comment_verification_tasks (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    post_url VARCHAR(500),
-                    platform VARCHAR(50),
-                    unique_code VARCHAR(20) UNIQUE,
-                    required_comment_text VARCHAR(200),
-                    status VARCHAR(20) DEFAULT 'pending',
-                    user_comment_text TEXT,
-                    reward_amount DECIMAL(10,2) DEFAULT 0.00,
-                    verified_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # جدول المكافآت
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS user_rewards (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    task_id INTEGER,
-                    reward_amount DECIMAL(10,2),
-                    reward_type VARCHAR(50),
-                    status VARCHAR(20) DEFAULT 'pending',
-                    paid_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (task_id) REFERENCES comment_verification_tasks(id) ON DELETE CASCADE
-                )
-            ''')
-            
-            # جدول المهام النشطة
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS active_comment_tasks (
-                    id SERIAL PRIMARY KEY,
-                    platform VARCHAR(50),
-                    post_url VARCHAR(500),
-                    description VARCHAR(300),
-                    required_comment_template VARCHAR(200),
-                    reward_amount DECIMAL(10,2),
-                    max_participants INTEGER,
-                    current_participants INTEGER DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'active',
-                    created_by BIGINT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            conn.commit()
-            logger.info("✅ تم إعداد جداول نظام التحقق من التعليقات بنجاح!")
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في إعداد جداول التحقق: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                cursor.close()
-                conn.close()
-    
-    def generate_unique_code(self, user_id: int) -> str:
-        """إنشاء كود تحقق فريد للمستخدم"""
-        base_string = f"{user_id}_{datetime.now().timestamp()}_{secrets.token_hex(4)}"
-        unique_code = hashlib.md5(base_string.encode()).hexdigest()[:8].upper()
-        return f"CMT{unique_code}"
-    
-    def create_verification_task(self, user_id: int, task_data: dict) -> dict:
-        """إنشاء مهمة تحقق جديدة للمستخدم"""
-        conn = None
-        try:
-            conn = create_connection()
-            if not conn:
-                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
-                
-            cursor = conn.cursor()
-            
-            unique_code = self.generate_unique_code(user_id)
-            
-            cursor.execute('''
-                INSERT INTO comment_verification_tasks 
-                (user_id, post_url, platform, unique_code, required_comment_text, reward_amount)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            ''', (
-                user_id,
-                task_data['post_url'],
-                task_data['platform'],
-                unique_code,
-                task_data.get('required_comment_template', 'شارك برأيك في هذا المنتج'),
-                task_data['reward_amount']
-            ))
-            
-            # تحديث عدد المشاركين في المهمة النشطة
-            if 'task_id' in task_data:
-                cursor.execute('''
-                    UPDATE active_comment_tasks 
-                    SET current_participants = current_participants + 1 
-                    WHERE id = %s
-                ''', (task_data['task_id'],))
-            
-            conn.commit()
-            
-            return {
-                'success': True,
-                'unique_code': unique_code,
-                'message': 'تم إنشاء المهمة بنجاح'
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في إنشاء مهمة التحقق: {e}")
-            if conn:
-                conn.rollback()
-            return {'success': False, 'message': 'حدث خطأ في إنشاء المهمة'}
-        finally:
-            if conn:
-                cursor.close()
-                conn.close()
-    
-    def verify_comment_submission(self, user_id: int, unique_code: str, user_comment: str) -> dict:
-        """التحقق من تقديم التعليق"""
-        conn = None
-        try:
-            conn = create_connection()
-            if not conn:
-                return {'success': False, 'message': 'فشل الاتصال بقاعدة البيانات'}
-                
-            cursor = conn.cursor()
-            
-            # البحث عن المهمة
-            cursor.execute('''
-                SELECT id, post_url, platform, required_comment_text, reward_amount, status
-                FROM comment_verification_tasks 
-                WHERE user_id = %s AND unique_code = %s
-            ''', (user_id, unique_code))
-            
-            task = cursor.fetchone()
-            
-            if not task:
-                return {'success': False, 'message': '❌ لم يتم العثور على المهمة'}
-            
-            task_id, post_url, platform, required_text, reward_amount, status = task
-            
-            if status != 'pending':
-                return {'success': False, 'message': '❌ تم التحقق من هذه المهمة مسبقاً'}
-            
-            # التحقق من وجود الكود الفريد في التعليق
-            if unique_code not in user_comment:
-                return {'success': False, 'message': '❌ لم يتم العثور على كود التحقق في التعليق'}
-            
-            # تحديث حالة المهمة
-            cursor.execute('''
-                UPDATE comment_verification_tasks 
-                SET status = 'verified', user_comment_text = %s, verified_at = CURRENT_TIMESTAMP
-                WHERE id = %s
-            ''', (user_comment, task_id))
-            
-            # تسجيل المكافأة
-            cursor.execute('''
-                INSERT INTO user_rewards (user_id, task_id, reward_amount, reward_type, status)
-                VALUES (%s, %s, %s, 'comment_verification', 'approved')
-            ''', (user_id, task_id, reward_amount))
-            
-            conn.commit()
-            
-            return {
-                'success': True, 
-                'message': f'✅ تم التحقق من تعليقك بنجاح! مكافأة: {reward_amount} ريال',
-                'reward_amount': reward_amount
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في التحقق من التعليق: {e}")
-            if conn:
-                conn.rollback()
-            return {'success': False, 'message': 'حدث خطأ في التحقق'}
-        finally:
-            if conn:
-                cursor.close()
-                conn.close()
-
-    def get_active_tasks(self) -> list:
-        """الحصول على المهام النشطة"""
-        conn = None
-        try:
-            conn = create_connection()
-            if not conn:
-                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_active_tasks")
-                return []
-                
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT id, platform, post_url, description, required_comment_template, reward_amount, 
-                       max_participants, current_participants
-                FROM active_comment_tasks 
-                WHERE status = 'active' AND (current_participants < max_participants OR max_participants = 0)
-                ORDER BY created_at DESC
-            ''')
-            
-            tasks = []
-            for row in cursor.fetchall():
-                tasks.append({
-                    'id': row[0],
-                    'platform': row[1],
-                    'post_url': row[2],
-                    'description': row[3],
-                    'required_comment_template': row[4],
-                    'reward_amount': float(row[5]),
-                    'max_participants': row[6],
-                    'current_participants': row[7],
-                    'available_slots': row[6] - row[7] if row[6] > 0 else 999
-                })
-            
-            return tasks
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب المهام النشطة: {e}")
-            return []
-        finally:
-            if conn:
-                cursor.close()
-                conn.close()
-
-    def get_user_progress(self, user_id: int) -> dict:
-        """الحصول على تقدم المستخدم"""
-        conn = None
-        try:
-            conn = create_connection()
-            if not conn:
-                logger.error("❌ فشل الاتصال بقاعدة البيانات في get_user_progress")
-                return {'success': False}
-                
-            cursor = conn.cursor()
-            
-            # عدد المهام المكتملة
-            cursor.execute('''
-                SELECT COUNT(*) FROM comment_verification_tasks 
-                WHERE user_id = %s AND status = 'verified'
-            ''', (user_id,))
-            completed_tasks = cursor.fetchone()[0]
-            
-            # إجمالي المكافآت
-            cursor.execute('''
-                SELECT SUM(reward_amount) FROM user_rewards 
-                WHERE user_id = %s AND status = 'approved'
-            ''', (user_id,))
-            total_rewards_result = cursor.fetchone()
-            total_rewards = float(total_rewards_result[0]) if total_rewards_result[0] else 0.0
-            
-            # المهام قيد الانتظار
-            cursor.execute('''
-                SELECT COUNT(*) FROM comment_verification_tasks 
-                WHERE user_id = %s AND status = 'pending'
-            ''', (user_id,))
-            pending_tasks = cursor.fetchone()[0]
-            
-            return {
-                'completed_tasks': completed_tasks,
-                'pending_tasks': pending_tasks,
-                'total_rewards': total_rewards,
-                'success': True
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب تقدم المستخدم: {e}")
-            return {'success': False}
-        finally:
-            if conn:
-                cursor.close()
-                conn.close()
-
-# إنشاء كائن النظام العالمي
-comment_system = CommentVerificationSystem()
-
-# ==============================
-# 💬 دوال التحكم في نظام التعليقات
-# ==============================
 
 async def start_comment_system(update: Update, context: CallbackContext):
     """بدء نظام التعليقات - النسخة المعدلة"""
@@ -2896,7 +2955,6 @@ async def start_comment_system(update: Update, context: CallbackContext):
     active_tasks = comment_system.get_active_tasks()
     
     if not active_tasks:
-        # 🔽 أضف زر العودة
         keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -2917,7 +2975,7 @@ async def start_comment_system(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"comment_task_{task['id']}")])
     
     keyboard.append([InlineKeyboardButton("📊 عرض تقدمي", callback_data="comment_progress")])
-    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")])  # 🔽 أضف هذا السطر
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -3121,7 +3179,6 @@ async def show_comment_progress(update: Update, context: CallbackContext):
         f"• لا تحذف التعليقات بعد التحقق"
     )
     
-    # 🔽 أضف زر العودة
     keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="comment_back_to_main")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -3136,6 +3193,12 @@ async def handle_comment_back(update: Update, context: CallbackContext):
     await query.answer()
     
     await start_comment_system(update, context)
+
+async def handle_comment_back_to_main(update: Update, context: CallbackContext):
+    """العودة للقائمة الرئيسية للتعليقات"""
+    query = update.callback_query
+    await query.answer()
+    await comment_system_start(update, context)
 
 # ==============================
 # 🛠️ أوامر المسؤول لإدارة المهام
@@ -3297,38 +3360,6 @@ def test_database_connection():
     except Exception as e:
         print(f"❌ خطأ في الاتصال: {e}")
         return False
-
-
-async def handle_comment_main_menu(update: Update, context: CallbackContext):
-    """معالجة خيارات القائمة الرئيسية لنظام التعليقات"""
-    query = update.callback_query
-    await query.answer()
-    
-    choice = query.data
-    
-    if choice == "available_tasks":
-        # استخدام النظام الحالي للتعليقات
-        await start_comment_system(update, context)
-    elif choice == "my_comment_progress":
-        # استخدام دالة عرض التقدم الحالية
-        await show_comment_progress(update, context)
-    elif choice == "main_menu":
-        await query.edit_message_text(
-            "🔙 **العودة إلى القائمة الرئيسية**\n\n"
-            "استخدم الأوامر التالية:\n"
-            "/start - بدء التسجيل\n"
-            "/profile - عرض الملف الشخصي\n" 
-            "/invite - كود الدعوة\n"
-            "/comments - نظام التعليقات\n"
-            "/support - الدعم الفني"
-        )
-
-async def handle_comment_back_to_main(update: Update, context: CallbackContext):
-    """العودة للقائمة الرئيسية للتعليقات"""
-    query = update.callback_query
-    await query.answer()
-    await comment_system_start(update, context)
-
 
 def main():
     """الدالة الرئيسية لتشغيل البوت"""
