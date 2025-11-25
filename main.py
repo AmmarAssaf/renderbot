@@ -1409,6 +1409,7 @@ async def handle_social_media_menu(update: Update, context: CallbackContext) -> 
             return OTHER_SOCIAL_MEDIA
             
         else:  # skip_social
+            # ⭐ التعديل: استخدام await للاستدعاء
             return await proceed_to_payment(update, context)
             
     except Exception as e:
@@ -1694,47 +1695,65 @@ async def show_social_media_menu(update: Update, context: CallbackContext) -> in
 
 async def proceed_to_payment(update: Update, context: CallbackContext) -> int:
     """الانتقال إلى مرحلة اختيار طريقة الدفع"""
-    # ⭐ التحقق إذا كنا في وضع التعديل لوسائل التواصل
-    if context.user_data.get('editing_social'):
-        # مسح العلامة والعودة للقائمة
-        del context.user_data['editing_social']
+    try:
+        # ⭐ التحقق إذا كنا في وضع التعديل لوسائل التواصل
+        if context.user_data.get('editing_social'):
+            # مسح العلامة أولاً
+            del context.user_data['editing_social']
+            
+            # حفظ التقدم أولاً
+            save_registration_progress(update.effective_user.id, 'EDIT_CHOICE', context.user_data)
+            
+            # إرسال رسالة تأكيد
+            if hasattr(update, 'callback_query') and update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(
+                    "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
+                    "🔁 **جاري العودة إلى قائمة التعديل...**"
+                )
+            else:
+                await update.message.reply_text(
+                    "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
+                    "🔁 **جاري العودة إلى قائمة التعديل...**"
+                )
+            
+            # ⭐ التعديل الحاسم: استخدام context.bot.send_message بدلاً من العودة المباشرة
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="📋 **قائمة التعديل**\n\nاختر البيانات التي تريد تعديلها:"
+            )
+            return await show_edit_options(update, context)
         
-        # إرسال رسالة تأكيد والعودة إلى قائمة التعديل
+        # إذا لم نكن في وضع التعديل، نستمر إلى طريقة الدفع كالمعتاد
+        payment_keyboard = [['محفظة الكترونية', 'حوالة مالية']]
+        reply_markup = ReplyKeyboardMarkup(payment_keyboard, one_time_keyboard=True)
+        
         if hasattr(update, 'callback_query') and update.callback_query:
             await update.callback_query.answer()
-            await update.callback_query.message.reply_text(
-                "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
-                "🔁 **جاري العودة إلى قائمة التعديل...**"
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="✅ **تم حفظ جميع بيانات وسائل التواصل!**\n\n"
+                     "💰 **الآن، اختر طريقة استلام المكافآت:**",
+                reply_markup=reply_markup
             )
         else:
             await update.message.reply_text(
-                "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
-                "🔁 **جاري العودة إلى قائمة التعديل...**"
+                "✅ **تم حفظ جميع بيانات وسائل التواصل!**\n\n"
+                "💰 **الآن، اختر طريقة استلام المكافآت:**",
+                reply_markup=reply_markup
             )
         
-        return await show_edit_options(update, context)
-    
-    # إذا لم نكن في وضع التعديل، نستمر إلى طريقة الدفع كالمعتاد
-    payment_keyboard = [['محفظة الكترونية', 'حوالة مالية']]
-    reply_markup = ReplyKeyboardMarkup(payment_keyboard, one_time_keyboard=True)
-    
-    if hasattr(update, 'callback_query') and update.callback_query:
-        await update.callback_query.answer()
+        save_registration_progress(update.effective_user.id, 'PAYMENT_METHOD', context.user_data)
+        return PAYMENT_METHOD
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في proceed_to_payment: {e}")
+        # استمرار العملية في حالة الخطأ
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="✅ **تم حفظ جميع بيانات وسائل التواصل!**\n\n"
-                 "💰 **الآن، اختر طريقة استلام المكافآت:**",
-            reply_markup=reply_markup
+            text="⚠️ حدث خطأ تقني. جاري المتابعة..."
         )
-    else:
-        await update.message.reply_text(
-            "✅ **تم حفظ جميع بيانات وسائل التواصل!**\n\n"
-            "💰 **الآن، اختر طريقة استلام المكافآت:**",
-            reply_markup=reply_markup
-        )
-    
-    save_registration_progress(update.effective_user.id, 'PAYMENT_METHOD', context.user_data)
-    return PAYMENT_METHOD
+        return PAYMENT_METHOD
 
 async def get_payment_method(update: Update, context: CallbackContext) -> int:
     """استقبال طريقة الدفع المختارة من المستخدم"""
