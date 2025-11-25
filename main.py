@@ -1701,30 +1701,20 @@ async def proceed_to_payment(update: Update, context: CallbackContext) -> int:
             # مسح العلامة أولاً
             del context.user_data['editing_social']
             
-            # حفظ التقدم أولاً
+            # حفظ التقدم
             save_registration_progress(update.effective_user.id, 'EDIT_CHOICE', context.user_data)
             
-            # إرسال رسالة تأكيد
+            # ⭐ التصحيح: استخدام edit_message_text مباشرة
             if hasattr(update, 'callback_query') and update.callback_query:
                 await update.callback_query.answer()
-                await update.callback_query.edit_message_text(
-                    "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
-                    "🔁 **جاري العودة إلى قائمة التعديل...**"
-                )
+                # الانتقال مباشرة إلى عرض قائمة التعديل
+                return await show_edit_options(update, context)
             else:
-                await update.message.reply_text(
-                    "✅ **تم تحديث وسائل التواصل بنجاح!**\n\n"
-                    "🔁 **جاري العودة إلى قائمة التعديل...**"
-                )
-            
-            # ⭐ التعديل الحاسم: استخدام context.bot.send_message بدلاً من العودة المباشرة
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="📋 **قائمة التعديل**\n\nاختر البيانات التي تريد تعديلها:"
-            )
-            return await show_edit_options(update, context)
+                # إذا لم يكن هناك callback query، نرسل رسالة جديدة
+                await update.message.reply_text("✅ تم تحديث وسائل التواصل! جاري العودة للقائمة...")
+                return await show_edit_options(update, context)
         
-        # إذا لم نكن في وضع التعديل، نستمر إلى طريقة الدفع كالمعتاد
+        # الكود العادي لاستمرار التسجيل...
         payment_keyboard = [['محفظة الكترونية', 'حوالة مالية']]
         reply_markup = ReplyKeyboardMarkup(payment_keyboard, one_time_keyboard=True)
         
@@ -1748,12 +1738,13 @@ async def proceed_to_payment(update: Update, context: CallbackContext) -> int:
         
     except Exception as e:
         logger.error(f"❌ خطأ في proceed_to_payment: {e}")
-        # استمرار العملية في حالة الخطأ
+        # في حالة الخطأ، نعود مباشرة إلى قائمة التعديل
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="⚠️ حدث خطأ تقني. جاري المتابعة..."
+            text="⚠️ حدث خطأ تقني. جاري العودة إلى قائمة التعديل..."
         )
-        return PAYMENT_METHOD
+        return await show_edit_options(update, context)
+
 
 async def get_payment_method(update: Update, context: CallbackContext) -> int:
     """استقبال طريقة الدفع المختارة من المستخدم"""
@@ -2261,6 +2252,25 @@ async def show_final_summary(update: Update, context: CallbackContext) -> int:
     
     return ConversationHandler.END
 
+
+# أضف هذا الكود للتحقق من أن القائمة تُرسل بشكل صحيح
+async def debug_show_edit_options(update: Update, context: CallbackContext):
+    """دالة تصحيح للأخطاء"""
+    try:
+        logger.info("🔍 [DEBUG] show_edit_options called")
+        logger.info(f"🔍 [DEBUG] update type: {type(update)}")
+        logger.info(f"🔍 [DEBUG] has callback_query: {hasattr(update, 'callback_query')}")
+        
+        if hasattr(update, 'callback_query') and update.callback_query:
+            logger.info(f"🔍 [DEBUG] callback_query data: {update.callback_query.data}")
+        
+        # استدعاء الدالة الأصلية
+        return await show_edit_options(update, context)
+        
+    except Exception as e:
+        logger.error(f"🔍 [DEBUG] Error in show_edit_options: {e}")
+        raise e
+
 # ==============================
 # 🔧 الأوامر الإضافية
 # ==============================
@@ -2458,22 +2468,31 @@ async def show_edit_options(update: Update, context: CallbackContext) -> int:
 """
         
         keyboard = [
-            [InlineKeyboardButton(f"👤 تعديل الاسم", callback_data="edit_name")],
-            [InlineKeyboardButton(f"🌍 تعديل البلد", callback_data="edit_country")],
-            [InlineKeyboardButton(f"🚻 تعديل الجنس", callback_data="edit_gender")],
-            [InlineKeyboardButton(f"🎂 تعديل سنة الولادة", callback_data="edit_birthyear")],
-            [InlineKeyboardButton(f"📞 تعديل الهاتف", callback_data="edit_phone")],
-            [InlineKeyboardButton(f"📧 تعديل البريد", callback_data="edit_email")],
+            [InlineKeyboardButton("👤 تعديل الاسم", callback_data="edit_name")],
+            [InlineKeyboardButton("🌍 تعديل البلد", callback_data="edit_country")],
+            [InlineKeyboardButton("🚻 تعديل الجنس", callback_data="edit_gender")],
+            [InlineKeyboardButton("🎂 تعديل سنة الولادة", callback_data="edit_birthyear")],
+            [InlineKeyboardButton("📞 تعديل الهاتف", callback_data="edit_phone")],
+            [InlineKeyboardButton("📧 تعديل البريد", callback_data="edit_email")],
             [InlineKeyboardButton("📱 تعديل وسائل التواصل", callback_data="edit_social")],
-            [InlineKeyboardButton(f"💰 تعديل طريقة الدفع", callback_data="edit_payment")],
+            [InlineKeyboardButton("💰 تعديل طريقة الدفع", callback_data="edit_payment")],
             [InlineKeyboardButton("✅ إنهاء التعديل والعودة", callback_data="edit_done")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # ⭐ التصحيح: استخدام نفس الرسالة بدلاً من إنشاء رسالة جديدة
         if hasattr(update, 'callback_query') and update.callback_query:
-            await update.callback_query.edit_message_text(current_data, reply_markup=reply_markup)
+            await update.callback_query.edit_message_text(
+                text=current_data,
+                reply_markup=reply_markup
+            )
         else:
-            await update.message.reply_text(current_data, reply_markup=reply_markup)
+            # إذا لم يكن هناك callback query، نرسل رسالة جديدة
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=current_data,
+                reply_markup=reply_markup
+            )
         
         save_registration_progress(update.effective_user.id, 'EDIT_CHOICE', context.user_data)
         return EDIT_CHOICE
@@ -2481,6 +2500,7 @@ async def show_edit_options(update: Update, context: CallbackContext) -> int:
     except Exception as e:
         logger.error(f"❌ خطأ في show_edit_options: {e}")
         
+        # ⭐ التصحيح: معالجة الخطأ بإرسال القائمة بشكل بديل
         keyboard = [
             [InlineKeyboardButton("👤 الاسم", callback_data="edit_name")],
             [InlineKeyboardButton("🌍 البلد", callback_data="edit_country")],
@@ -2494,17 +2514,20 @@ async def show_edit_options(update: Update, context: CallbackContext) -> int:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        error_message = "📋 **قائمة التعديل**\n\n✏️ اختر البيانات التي تريد تعديلها:"
+        
         if hasattr(update, 'callback_query') and update.callback_query:
             await update.callback_query.edit_message_text(
-                "✏️ **اختر البيانات التي تريد تعديلها:**",
+                text=error_message,
                 reply_markup=reply_markup
             )
         else:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="✏️ **اختر البيانات التي تريد تعديلها:**",
+                text=error_message,
                 reply_markup=reply_markup
             )
+        
         return EDIT_CHOICE
 
 async def handle_edit_choice(update: Update, context: CallbackContext) -> int:
